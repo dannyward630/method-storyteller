@@ -103,8 +103,12 @@ fn save_open_export_round_trip() {
         let original = s.script.clone();
         let mut opened = Session::default();
         run(&registry, &mut opened, "file.open", json!({ "path": path }));
-        // An opened .fdx also keeps Final Draft data for writing back; compare the script itself.
-        assert_eq!((&opened.script.title_page, &opened.script.elements), (&original.title_page, &original.elements), "{name}");
+        // An opened .fdx also keeps Final Draft data for writing back (scene properties
+        // included); compare the script itself.
+        let content = |s: &storyteller_core::Script| {
+            (s.title_page.clone(), s.elements.iter().map(|e| (e.kind, e.text.clone(), e.scene_number.clone(), e.dual)).collect::<Vec<_>>())
+        };
+        assert_eq!(content(&opened.script), content(&original), "{name}");
     }
     let pdf = dir.path().join("attic.pdf");
     run(&registry, &mut s, "file.export_pdf", json!({ "path": pdf }));

@@ -652,6 +652,73 @@ pub fn paginate(script: &Script, layout: &Layout) -> Paginated {
     Paginated { title_page: title_page(&script.title_page, layout), pages, scenes, element_pages }
 }
 
+/// Where each scene starts and how long it is, as Final Draft records them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SceneLength {
+    /// Index of the scene heading element.
+    pub element: usize,
+    /// Page the scene starts on.
+    pub page: u32,
+    /// Length in eighths of a page (`10` is `1 2/8`). An omitted scene is `0`.
+    pub eighths: u32,
+}
+
+/// Each scene's start page and length in eighths. The length counts the scene's lines on each
+/// page it touches (blank lines between them included, empty page bottoms not), plus the blank
+/// lines before its own heading, rounded up to the next eighth. Measured against Final Draft's
+/// recorded lengths, this is exact for 96.7% of the ground-truth scenes and 1/8 long for the
+/// rest (docs/research/pagination-calibration.md).
+pub fn scene_lengths(script: &Script, paginated: &Paginated, layout: &Layout) -> Vec<SceneLength> {
+    let lpp = u32::from(layout.lines_per_page.max(1));
+    let top = u32::from(layout.body_top);
+    // Per scene: (heading element, start page, [(page, first row, last row)]).
+    type Rows = Vec<(usize, u32, u32)>;
+    let mut scenes: Vec<(usize, u32, Rows)> = Vec::new();
+    for (index, page) in paginated.pages.iter().enumerate() {
+        for line in &page.lines {
+            let LineRole::Element(kind) = line.role else { continue };
+            let row = u32::from(line.row).saturating_sub(top);
+            if kind == ElementKind::SceneHeading
+                && let Some(element) = line.element
+                && scenes.last().is_none_or(|(last, ..)| *last != element)
+            {
+                scenes.push((element, page.number, Vec::new()));
+            }
+            let Some((.., parts)) = scenes.last_mut() else { continue };
+            match parts.last_mut() {
+                Some(part) if part.0 == index => {
+                    part.1 = part.1.min(row);
+                    part.2 = part.2.max(row);
+                }
+                _ => parts.push((index, row, row)),
+            }
+        }
+    }
+    scenes
+        .into_iter()
+        .map(|(element, page, parts)| {
+            let heading = script.elements.get(element);
+            let omitted = heading.and_then(|h| h.fdx.as_deref()).is_some_and(|f| f.children.contains("<OmittedScene"));
+            let style = match heading.and_then(|h| h.fdx.as_deref()).filter(|f| f.kind == ElementKind::SceneHeading) {
+                Some(fdx) => crate::fdx::paragraph_style(fdx, layout.scene_heading),
+                None => layout.scene_heading,
+            };
+            let lines: u32 = parts.iter().map(|(_, first, last)| last - first + 1).sum::<u32>() + u32::from(style.space_before);
+            let eighths = if omitted { 0 } else { (lines * 8).div_ceil(lpp) };
+            SceneLength { element, page, eighths }
+        })
+        .collect()
+}
+
+/// Eighths as Final Draft writes them: `3/8`, `1`, `1 2/8`, and `0/8` for none.
+pub fn format_eighths(eighths: u32) -> String {
+    match (eighths / 8, eighths % 8) {
+        (0, fraction) => format!("{fraction}/8"),
+        (whole, 0) => whole.to_string(),
+        (whole, fraction) => format!("{whole} {fraction}/8"),
+    }
+}
+
 /// Lay out the title page, if the script has one.
 pub fn title_page(title: &TitlePage, layout: &Layout) -> Option<Page> {
     if title.is_empty() {

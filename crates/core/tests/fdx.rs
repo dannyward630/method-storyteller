@@ -3,9 +3,13 @@
 use storyteller_core::model::{Element, ElementKind as K, Script};
 use storyteller_core::{CoreError, fdx, fountain};
 
-/// The script without the Final Draft data an import keeps for writing back.
+/// The script without the Final Draft data an import keeps for writing back (document
+/// sections, and per-paragraph extras such as the scene properties every export writes).
 fn model(mut script: Script) -> Script {
     script.fdx = None;
+    for element in &mut script.elements {
+        element.fdx = None;
+    }
     script
 }
 

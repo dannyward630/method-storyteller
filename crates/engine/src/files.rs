@@ -78,7 +78,7 @@ pub fn open(path: &Path) -> Result<(Script, FileFormat), FileError> {
 pub fn encode(script: &Script, format: FileFormat, layout: &Layout) -> Result<Vec<u8>, FileError> {
     Ok(match format {
         FileFormat::Fountain => fountain::write(script).into_bytes(),
-        FileFormat::Fdx => fdx::write(script).into_bytes(),
+        FileFormat::Fdx => fdx::write_with_layout(script, layout).into_bytes(),
         FileFormat::Pdf => storyteller_pdf::export(script, layout, &storyteller_pdf::PdfOptions { creator: crate::app_version() })?,
     })
 }
