@@ -1,0 +1,30 @@
+[package]
+name = "storyteller-cli"
+description = "Method Storyteller command line: convert, paginate, export and headless control"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+default-run = "method-storyteller"
+
+[lib]
+name = "storyteller_cli"
+path = "src/lib.rs"
+
+[[bin]]
+name = "method-storyteller"
+path = "src/main.rs"
+
+# Deprecated alias of `method-storyteller`; prints a note on stderr. Remove in a future release.
+[[bin]]
+name = "mst"
+path = "src/bin/mst.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+storyteller-core = { workspace = true }
+storyteller-engine = { workspace = true }
+serde_json = { workspace = true }
