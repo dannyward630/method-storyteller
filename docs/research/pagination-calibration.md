@@ -56,6 +56,32 @@ remaining misses are catalogued as M2 follow-up work rather than forced to fit.
 10. **Dual dialogue:** the block is wrapped in a paragraph typed `General` with no text. It is a
     container, not a blank line.
 
+## Scene lengths in eighths
+
+Every `.fdx` export writes each scene heading's `SceneProperties Page` and `Length` from our
+pagination. A scene that started as Fountain gets new properties. An imported scene keeps its
+other properties (title, colour, summary) and gets its page and length refreshed. The values are
+written the way Final Draft writes them: `3/8`, `1`, `1 2/8`, and `0/8` for an omitted scene.
+Method Schedule reads them.
+
+The rule was measured against the lengths Final Draft recorded:
+
+1. Count the scene's lines on each page it touches, from its first line to its last. Blank lines
+   between elements count; an empty page bottom does not.
+2. Add the blank lines before the scene's own heading (2, or 1 where the paragraph overrides it).
+3. Round up to the next eighth of the page's body lines.
+
+The rule is exact for 1,053 of 1,089 scenes in the pairs (96.7%) and 8,478 of 9,048 across the 108
+real files (93.7%). Every miss in the pairs is 1/8 long. Rejected variants:
+
+| Variant | Pairs exact |
+| --- | --- |
+| Rows to the next heading, rounded up | 814 |
+| Content lines only, rounded up | 853 |
+| Content lines plus 2, rounded up | 1,018 |
+| Content lines plus (MORE) and continued cues | 1,029 |
+| Rounding to the nearest eighth | 640 or fewer |
+
 ## Open questions
 
 - Line-spacing presets (Loose, Tight, Very Tight) and `Spacing="2"` elements: none in the pairs.

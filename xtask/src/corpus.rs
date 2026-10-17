@@ -5,9 +5,11 @@
 //! names a manifest outside the work tree: one `.fdx` path per line, optionally followed by a
 //! tab and the `.pdf` Final Draft exported from it. `#` starts a comment.
 //!
-//! For each file it checks that a second import of our export is identical, then compares
+//! For each file it checks that exporting is stable (export, import, export gives the same file,
+//! with every document section kept), then compares
 //! each scene's start page with the page Final Draft recorded in the file
-//! (`SceneProperties@Page`), and the page count with the PDF's. Output is numbers only:
+//! (`SceneProperties@Page`), each scene's length in eighths with the one it recorded
+//! (`SceneProperties@Length`), and the page count with the PDF's. Output is numbers only:
 //! anonymous file numbers, counts, percentages and page numbers.
 
 use std::path::{Path, PathBuf};
@@ -27,6 +29,8 @@ struct FileResult {
     pages: usize,
     pdf_pages: Option<usize>,
     round_trip: bool,
+    /// Scene lengths compared with Final Draft's: (scenes, exact).
+    lengths: (usize, usize),
 }
 
 fn inside(path: &Path, root: &Path) -> bool {
@@ -50,6 +54,23 @@ fn cached_page(children: &str) -> Option<u32> {
     page_number(value)
 }
 
+/// The length Final Draft recorded for a scene, in eighths (`1 2/8` is 10).
+fn cached_eighths(children: &str) -> Option<u32> {
+    let properties = children.find("<SceneProperties").map(|at| children.get(at..).unwrap_or_default())?;
+    let tag = properties.get(..properties.find('>')?)?;
+    let value = tag.split(" Length=\"").nth(1)?.split('"').next()?.trim();
+    let (whole, fraction) = match value.split_once(' ') {
+        Some((whole, fraction)) => (whole.parse::<u32>().ok()?, Some(fraction)),
+        None if value.contains('/') => (0, Some(value)),
+        None => (value.parse::<u32>().ok()?, None),
+    };
+    let eighths = match fraction {
+        Some(f) => f.split_once('/').and_then(|(n, d)| (d.trim() == "8").then(|| n.trim().parse::<u32>().ok()).flatten())?,
+        None => 0,
+    };
+    Some(whole * 8 + eighths)
+}
+
 fn pdf_pages(pdf: &Path) -> Option<usize> {
     let output = Command::new("pdfinfo").arg(pdf).output().ok()?;
     String::from_utf8_lossy(&output.stdout).lines().find_map(|l| l.strip_prefix("Pages:").and_then(|n| n.trim().parse().ok()))
@@ -59,7 +80,10 @@ fn measure(fdx_path: &Path, pdf: Option<&Path>) -> Result<FileResult, String> {
     let bytes = std::fs::read(fdx_path).map_err(|e| format!("unreadable ({})", e.kind()))?;
     let text = storyteller_core::decode_text(&bytes).map_err(|_| "not UTF-8 text".to_string())?;
     let script = fdx::parse(text).map_err(|_| "does not import".to_string())?;
-    let mut result = FileResult { round_trip: fdx::parse(&fdx::write(&script)).is_ok_and(|again| again == script), ..FileResult::default() };
+    // Exports refresh scene properties, so compare a second export with the first instead.
+    let first = fdx::write(&script);
+    let round_trip = fdx::parse(&first).is_ok_and(|again| fdx::write(&again) == first && again.fdx == script.fdx);
+    let mut result = FileResult { round_trip, ..FileResult::default() };
 
     let paginated = paginate::paginate(&script, &Layout::for_script(&script));
     result.pages = paginated.page_count() + usize::from(paginated.title_page.is_some());
@@ -77,6 +101,18 @@ fn measure(fdx_path: &Path, pdf: Option<&Path>) -> Result<FileResult, String> {
             result.first_miss = Some((index + 1, expected, scene.page));
         }
         result.max_drift = result.max_drift.max(drift);
+    }
+    let layout = Layout::for_script(&script);
+    // Scene lengths in eighths, compared with what Final Draft recorded (omitted scenes aside).
+    for scene in paginate::scene_lengths(&script, &paginated, &layout) {
+        let Some(expected) = script.elements.get(scene.element).and_then(|e| e.fdx.as_ref()).and_then(|f| cached_eighths(&f.children)) else {
+            continue;
+        };
+        if expected == 0 {
+            continue;
+        }
+        result.lengths.0 += 1;
+        result.lengths.1 += usize::from(scene.eighths == expected);
     }
     result.pdf_pages = pdf.and_then(pdf_pages);
     Ok(result)
@@ -107,6 +143,7 @@ pub fn run(root: &Path) -> Result<(), String> {
     let (mut files, mut failed, mut round_trips, mut scenes, mut exact, mut all_exact_files, mut page_matches, mut with_pdf) =
         (0, 0, 0, 0, 0, 0, 0, 0);
     let mut max_drift = 0;
+    let mut lengths = (0usize, 0usize);
     for (n, (fdx_path, pdf)) in entries.iter().enumerate() {
         let n = n + 1;
         if inside(fdx_path, root) || pdf.as_deref().is_some_and(|p| inside(p, root)) {
@@ -120,6 +157,8 @@ pub fn run(root: &Path) -> Result<(), String> {
             }
             Ok(r) => {
                 round_trips += usize::from(r.round_trip);
+                lengths.0 += r.lengths.0;
+                lengths.1 += r.lengths.1;
                 scenes += r.scenes;
                 exact += r.exact;
                 all_exact_files += usize::from(r.scenes > 0 && r.exact == r.scenes);
@@ -144,8 +183,11 @@ pub fn run(root: &Path) -> Result<(), String> {
         }
     }
     println!(
-        "corpus: {files} files, {failed} failed to import, {round_trips} round-trip identically; scenes exact {exact}/{scenes} ({}), files scene-exact {all_exact_files}, max drift {max_drift} pages; page count matches PDF {page_matches}/{with_pdf}",
-        percent(exact, scenes)
+        "corpus: {files} files, {failed} failed to import, {round_trips} round-trip identically; scenes exact {exact}/{scenes} ({}), files scene-exact {all_exact_files}, max drift {max_drift} pages; scene lengths exact {}/{} ({}); page count matches PDF {page_matches}/{with_pdf}",
+        percent(exact, scenes),
+        lengths.1,
+        lengths.0,
+        percent(lengths.1, lengths.0)
     );
     Ok(())
 }

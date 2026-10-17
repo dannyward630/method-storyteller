@@ -118,7 +118,9 @@ fn unmodelled_parts_are_written_back() {
     assert_eq!(sections, ["TitlePage", "<ElementSettings", "<ElementSettings", "<ElementSettings", "<Revisions", "<LockedPages"]);
 
     let again = fdx::parse(&xml).unwrap();
-    assert_eq!(again, script, "a second import is identical");
+    let text = |s: &storyteller_core::Script| s.elements.iter().map(|e| (e.kind, e.text.clone())).collect::<Vec<_>>();
+    assert_eq!(text(&again), text(&script), "a second import has the same script");
+    assert_eq!(again.fdx, script.fdx, "and the same document sections");
     assert_eq!(fdx::write(&again), xml, "writing is stable");
 }
 
@@ -166,4 +168,29 @@ fn sections_and_synopses_export_as_outline_and_summary() {
     let kinds: Vec<K> = back.elements.iter().map(|e| e.kind).collect();
     assert_eq!(kinds, [K::Section, K::Section, K::Synopsis, K::SceneHeading]);
     assert_eq!(back.elements[1].level, 2);
+}
+
+#[test]
+fn every_export_writes_scene_pages_and_lengths() {
+    let script = storyteller_core::fountain::parse("INT. ONE - DAY\n\nA line.\n\nEXT. TWO - NIGHT\n\nAnother line.\n").unwrap();
+    let xml = fdx::write(&script);
+    // Two blank lines before the heading, the heading, a blank, the action: 5 lines, one eighth.
+    assert_eq!(xml.matches(r#"<SceneProperties Length="1/8" Page="1" Title=""/>"#).count(), 2, "{xml}");
+
+    // An imported scene keeps its other properties; the stale page and length are replaced.
+    let script = fdx::parse(DOC).unwrap();
+    let xml = fdx::write(&script);
+    assert!(xml.contains(r#"<SceneProperties Length="1/8" Page="1" Title="">"#), "{xml}");
+    assert!(xml.contains("<CharacterArcBeat Name=\"ANNA\">"), "{xml}");
+    // The omitted scene's own heading reports no length.
+    assert!(xml.contains("<SceneProperties Length=\"0/8\" Page=\"1\" Title=\"\"/><OmittedScene>"), "{xml}");
+}
+
+#[test]
+fn eighths_are_written_like_final_draft() {
+    use storyteller_core::paginate::format_eighths;
+    assert_eq!(format_eighths(0), "0/8");
+    assert_eq!(format_eighths(3), "3/8");
+    assert_eq!(format_eighths(8), "1");
+    assert_eq!(format_eighths(10), "1 2/8");
 }

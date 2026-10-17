@@ -15,6 +15,7 @@ use quick_xml::events::{BytesStart, Event};
 use crate::inline::{self, Run, Style};
 use crate::layout::{Align, ElementStyle, Layout, chars_per_line};
 use crate::model::{Element, ElementKind, FdxDocument, FdxParagraph, FdxSection, Script, TitleField, TitlePage};
+use crate::paginate;
 use crate::{CoreError, MAX_ELEMENTS, MAX_INPUT_BYTES};
 
 /// Deepest element nesting accepted.
@@ -131,7 +132,39 @@ fn write_attr(key: &str, value: &str, out: &mut String) {
     out.push('"');
 }
 
-fn write_paragraph(element: &Element, new_page: bool, indent: &str, out: &mut String) {
+/// `tag` (a start tag such as `<SceneProperties Length="1" Page="3"/>`) with `name` set to `value`.
+fn set_tag_attr(tag: &str, name: &str, value: &str) -> String {
+    let key = format!(" {name}=\"");
+    if let Some(at) = tag.find(&key) {
+        let start = at + key.len();
+        if let Some(len) = tag.get(start..).and_then(|rest| rest.find('"')) {
+            return format!("{}{value}{}", tag.get(..start).unwrap_or_default(), tag.get(start + len..).unwrap_or_default());
+        }
+    }
+    let close = if tag.ends_with("/>") { tag.len() - 2 } else { tag.len().saturating_sub(1) };
+    format!("{} {name}=\"{value}\"{}", tag.get(..close).unwrap_or_default().trim_end(), tag.get(close..).unwrap_or_default())
+}
+
+/// A scene heading's children with its `SceneProperties` page and length set from our own
+/// pagination: updated in place when the file had one, otherwise added first.
+fn scene_children(children: &str, page: u32, eighths: u32) -> String {
+    let length = paginate::format_eighths(eighths);
+    let page = page.to_string();
+    // Only the paragraph's own properties, which Final Draft writes first: an omitted scene keeps
+    // its original heading, with properties of its own, nested further in.
+    let start = children.len() - children.trim_start().len();
+    if children.trim_start().starts_with("<SceneProperties")
+        && let Some(len) = children.get(start..).and_then(|rest| rest.find('>'))
+    {
+        let end = start + len + 1;
+        let tag = children.get(start..end).unwrap_or_default();
+        let tag = set_tag_attr(&set_tag_attr(tag, "Length", &length), "Page", &page);
+        return format!("{}{tag}{}", children.get(..start).unwrap_or_default(), children.get(end..).unwrap_or_default());
+    }
+    format!("<SceneProperties Length=\"{length}\" Page=\"{page}\" Title=\"\"/>{children}")
+}
+
+fn write_paragraph(element: &Element, scene: Option<(u32, u32)>, new_page: bool, indent: &str, out: &mut String) {
     out.push_str(indent);
     out.push_str("<Paragraph");
     write_attr("Type", &fdx_type(element), out);
@@ -152,10 +185,15 @@ fn write_paragraph(element: &Element, new_page: bool, indent: &str, out: &mut St
         out.push_str(" StartsNewPage=\"Yes\"");
     }
     out.push_str(">\n");
-    if let Some(fdx) = element.fdx.as_ref().filter(|f| !f.children.is_empty()) {
+    let kept = element.fdx.as_ref().map_or("", |f| f.children.as_str());
+    let children = match scene {
+        Some((page, eighths)) => scene_children(kept, page, eighths),
+        None => kept.to_string(),
+    };
+    if !children.is_empty() {
         out.push_str(indent);
         out.push_str("  ");
-        out.push_str(&fdx.children);
+        out.push_str(&children);
         out.push('\n');
     }
     write_text_runs(&element.text, &format!("{indent}  "), out);
@@ -171,8 +209,17 @@ fn speech_end(elements: &[Element], cue: usize) -> usize {
     end
 }
 
-/// Write a script as Final Draft XML.
+/// Write a script as Final Draft XML, paginated with [`Layout::for_script`].
 pub fn write(script: &Script) -> String {
+    write_with_layout(script, &Layout::for_script(script))
+}
+
+/// Write a script as Final Draft XML. Each scene heading's `SceneProperties` gets the page it
+/// starts on and its length in eighths from paginating with `layout`, as Final Draft records them.
+pub fn write_with_layout(script: &Script, layout: &Layout) -> String {
+    let paginated = paginate::paginate(script, layout);
+    let scenes: std::collections::HashMap<usize, (u32, u32)> =
+        paginate::scene_lengths(script, &paginated, layout).into_iter().map(|s| (s.element, (s.page, s.eighths))).collect();
     let mut out = String::from("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"no\" ?>\n");
     match script.fdx.as_ref().filter(|d| !d.root_attributes.is_empty()) {
         Some(document) => {
@@ -203,7 +250,7 @@ pub fn write(script: &Script) -> String {
                 }
                 out.push_str(">\n      <DualDialogue>\n");
                 for part in elements.get(index..second_end).unwrap_or(&[]) {
-                    write_paragraph(part, false, "        ", &mut out);
+                    write_paragraph(part, None, false, "        ", &mut out);
                 }
                 out.push_str("      </DualDialogue>\n    </Paragraph>\n");
                 new_page = false;
@@ -211,7 +258,7 @@ pub fn write(script: &Script) -> String {
                 continue;
             }
         }
-        write_paragraph(element, new_page, "    ", &mut out);
+        write_paragraph(element, scenes.get(&index).copied(), new_page, "    ", &mut out);
         new_page = false;
         index += 1;
     }
